@@ -9,12 +9,18 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 )
 
-type time struct {
+type timeData struct {
 	year  string
 	month string
 	day   string
+}
+
+type data struct {
+	time timeData
+	data string
 }
 
 func isNumber(n string) bool {
@@ -25,8 +31,8 @@ func isNumber(n string) bool {
 	return true
 }
 
-func setAllTimeData(body string) []time {
-	timeArray := make([]time, 0)
+func setAllTimeData(body string) []timeData {
+	timeArray := make([]timeData, 0)
 
 	for _, line := range strings.Split(strings.TrimRight(body, "\n"), "\n") {
 		if len(line) < 74 {
@@ -36,7 +42,7 @@ func setAllTimeData(body string) []time {
 			continue
 		}
 
-		tmpTime := time{year: line[80:84], month: line[85:87], day: line[88:90]}
+		tmpTime := timeData{year: line[80:84], month: line[85:87], day: line[88:90]}
 		timeArray = append(timeArray, tmpTime)
 	}
 
@@ -58,25 +64,23 @@ func fetchData(url string) string {
 	return string(body)
 }
 
-func setDetailDataInTime(time time) (md5, sha1, sha256, sha []string) {
-	timeString := time.year + "-" + time.month + "-" + time.day
-	url := "https://malshare.com/daily/" + timeString + "/malshare_fileList." + timeString + ".all.txt"
-	words := strings.Fields(fetchData(url))
+func getDetailDataByData(tmp string) (md5, sha1, sha256, sha string) {
+	words := strings.Fields(tmp)
 	for i := 0; i < len(words); i++ {
 		if i%4 == 0 {
-			md5 = append(md5, words[i])
+			md5 += words[i] + "\n"
 			continue
 		}
 		if i%4 == 1 {
-			sha1 = append(sha1, words[i])
+			sha1 += words[i] + "\n"
 			continue
 		}
 		if i%4 == 2 {
-			sha256 = append(sha256, words[i])
+			sha256 += words[i] + "\n"
 			continue
 		}
 		if i%4 == 3 {
-			sha = append(sha, words[i])
+			sha += words[i] + "\n"
 			continue
 		}
 	}
@@ -100,7 +104,7 @@ func readFile(path string) {
 	}
 }
 
-func writeFile(path string, text []string) {
+func writeFile(path string, text string) {
 	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Fatal(err)
@@ -109,14 +113,11 @@ func writeFile(path string, text []string) {
 
 	textWriter := bufio.NewWriter(file)
 
-	for i := 0; i < len(text); i++ {
-		value := text[i] + "\n"
-		_, err = textWriter.WriteString(value)
-		if err != nil {
-			log.Fatal(err)
-		}
-		textWriter.Flush()
+	_, err = textWriter.WriteString(text)
+	if err != nil {
+		log.Fatal(err)
 	}
+	textWriter.Flush()
 	fmt.Println("Data written to file successfully...")
 }
 
@@ -135,20 +136,18 @@ func createFolder(path string) {
 	}
 }
 
-func createFileAndWrite(path string, text []string) {
+func createFileAndWrite(path string, text string) {
 	createFile(path)
 	writeFile(path, text)
 }
 
-func main() {
-	timeStringData := fetchData("https://malshare.com/daily/")
-	timeArrayData := setAllTimeData(timeStringData)
-	createFolder("data")
-	for i := 0; i < len(timeArrayData); i++ {
-		md5, sha1, sha256, sha := setDetailDataInTime(timeArrayData[i])
-		yearPath := "data/" + timeArrayData[i].year
-		monthPath := yearPath + "/" + timeArrayData[i].month
-		dayPath := monthPath + "/" + timeArrayData[i].day
+func getResult(array []data, wg *sync.WaitGroup) {
+	defer wg.Done()
+	for i := 0; i < len(array); i++ {
+		md5, sha1, sha256, sha := getDetailDataByData(array[i].data)
+		yearPath := "data/" + array[i].time.year
+		monthPath := yearPath + "/" + array[i].time.month
+		dayPath := monthPath + "/" + array[i].time.day
 		filePath := dayPath + "/"
 		createFolder(yearPath)
 		createFolder(monthPath)
@@ -158,7 +157,42 @@ func main() {
 		createFileAndWrite(filePath+"sha256.txt", sha256)
 		createFileAndWrite(filePath+"sha.txt", sha)
 	}
+}
 
+func getDataByTime(timeArrayData []timeData, tmp *[]data, wg *sync.WaitGroup) {
+	defer wg.Done()
+	for i := 0; i < len(timeArrayData); i++ {
+		timeString := timeArrayData[i].year + "-" + timeArrayData[i].month + "-" + timeArrayData[i].day
+		url := "https://malshare.com/daily/" + timeString + "/malshare_fileList." + timeString + ".all.txt"
+		tmpData := data{timeArrayData[i], fetchData(url)}
+		fmt.Println(i)
+		*tmp = append(*tmp, tmpData)
+	}
+}
+
+func main() {
+	var wg sync.WaitGroup
+	timeStringData := fetchData("https://malshare.com/daily/")
+	timeArrayData := setAllTimeData(timeStringData)
+	createFolder("data")
+	dataArray := make([]data, 0)
+	step := len(timeArrayData) / 100
+	wg.Add(100)
+	for i := 0; i < 99; i++ {
+		go getDataByTime(timeArrayData[step*i:step*i+step], &dataArray, &wg)
+	}
+	go getDataByTime(timeArrayData[step*99:len(timeArrayData)], &dataArray, &wg)
+
+	wg.Wait()
+	step = len(dataArray) / 100
+	wg.Add(100)
+	for i := 0; i < 99; i++ {
+		go getResult(dataArray[step*i:step*i+step], &wg)
+	}
+	go getResult(dataArray[step*99:len(timeArrayData)], &wg)
+	wg.Wait()
+
+	fmt.Println("success")
 }
 
 //func indexHrefInLine(line, target string) int {
